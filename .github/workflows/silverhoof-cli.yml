@@ -1,0 +1,110 @@
+# Silver Hoof Games fork: keep the `silverhoof` branch on top of upstream main and build
+# designcraft-cli for old Linux hosts (glibc 2.28, Debian 10 shared hosting).
+#
+# - schedule / workflow_dispatch with sync: rebase `silverhoof` onto storytold/designcraft main,
+#   push it, then build. A rebase conflict fails the run (GitHub emails the repo owner).
+# - push to `silverhoof`: build only.
+# The binary is published to the rolling release `cli-latest` (asset designcraft-cli-linux-x86_64-glibc2.28).
+name: Silver Hoof CLI (glibc 2.28)
+
+on:
+  push:
+    branches: [silverhoof]
+  schedule:
+    - cron: "17 3 * * *" # nightly sync with upstream
+  workflow_dispatch:
+    inputs:
+      sync:
+        description: "Rebase onto upstream main first"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: silverhoof-cli
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  TARGET: x86_64-unknown-linux-gnu
+  GLIBC: "2.28"
+
+jobs:
+  cli:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: silverhoof
+          fetch-depth: 0
+
+      - name: Rebase onto upstream main
+        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.sync)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/storytold/designcraft.git
+          git fetch --no-tags upstream main
+          before=$(git rev-parse HEAD)
+          git rebase upstream/main
+          if [ "$(git rev-parse HEAD)" != "$before" ]; then
+            git push --force-with-lease=silverhoof:"$before" origin HEAD:silverhoof
+          fi
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+        with:
+          tool: cargo-zigbuild
+
+      - name: Install Zig
+        run: pip install ziglang==0.13.0
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Hyphenation tests
+        run: cargo test -p designcraft-compose --lib hyphen
+
+      - name: Build designcraft-cli for glibc ${{ env.GLIBC }}
+        run: cargo zigbuild --release -p designcraft-cli --target "$TARGET.$GLIBC"
+
+      - name: Check glibc requirement and smoke-test
+        run: |
+          bin="target/$TARGET/release/designcraft-cli"
+          need=$(objdump -T "$bin" | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -V | tail -1)
+          echo "highest GLIBC symbol: $need"
+          dpkg --compare-versions "$need" le "$GLIBC"
+          "$bin" --version
+          printf '%s\n' \
+            'file.new {"preset":"A5","pages":1}' \
+            'style.paragraph.create {"name":"Ru","para":{"align":"leftJustified"},"chars":{"language":"Russian","size":11}}' \
+            'frame.create {"rect":[40,40,200,400],"content":"text","text":"Типография переносов: пассажиры дилижанса трактование объединение"}' \
+            'file.exportPdf {"path":"smoke.pdf"}' > smoke.dcs
+          "$bin" script smoke.dcs > smoke.json
+          grep -q '"pages": 1' smoke.json
+          cp "$bin" designcraft-cli-linux-x86_64-glibc2.28
+          sha256sum designcraft-cli-linux-x86_64-glibc2.28 > designcraft-cli-linux-x86_64-glibc2.28.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: designcraft-cli-linux-x86_64-glibc2.28
+          path: designcraft-cli-linux-x86_64-glibc2.28*
+
+      - name: Publish rolling release cli-latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha=$(git rev-parse --short HEAD)
+          notes="designcraft-cli built from silverhoof@$sha for glibc $GLIBC ($(date -u +%F))"
+          if gh release view cli-latest >/dev/null 2>&1; then
+            gh release edit cli-latest --notes "$notes" --target "$(git rev-parse HEAD)"
+          else
+            gh release create cli-latest --prerelease --title "designcraft-cli (glibc $GLIBC)" --notes "$notes" --target "$(git rev-parse HEAD)"
+          fi
+          gh release upload cli-latest designcraft-cli-linux-x86_64-glibc2.28 designcraft-cli-linux-x86_64-glibc2.28.sha256 --clobber
