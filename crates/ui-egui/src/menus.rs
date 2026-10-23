@@ -2730,7 +2730,28 @@ pub fn menu_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
         menus.reverse();
     }
     for (menu, entries) in menus {
+        if menu == "Help" {
+            host_menu(app, ui);
+        }
         menu_button(ui, crate::rtl::widget(ui, crate::i18n::tr(&lang, menu)), |ui| menu_column(app, ui, &[(menu, entries)]));
+    }
+}
+
+/// The embedding page's menu ([`crate::Services::host_menu`]), just before Help.
+fn host_menu(app: &mut DesignApp, ui: &mut egui::Ui) {
+    let Some(menu) = app.services.host_menu.as_ref() else { return };
+    let (title, items) = (menu.title.clone(), menu.items.clone());
+    let mut chosen = None;
+    menu_button(ui, crate::rtl::widget(ui, title), |ui| {
+        for (id, label) in &items {
+            if ui.button(crate::rtl::widget(ui, label.as_str())).clicked() {
+                chosen = Some(id.clone());
+                ui.close();
+            }
+        }
+    });
+    if let (Some(id), Some(menu)) = (chosen, app.services.host_menu.as_mut()) {
+        (menu.invoke)(&id);
     }
 }
 

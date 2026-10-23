@@ -416,8 +416,42 @@ fn services(inbox: Inbox, ctx: egui::Context) -> Services {
         write: Some(Box::new(|name: &str, bytes: &[u8]| download(name, bytes))),
         download: Some(Box::new(|name: &str, bytes: &[u8]| download(name, bytes))),
         inbox: Some(inbox),
+        host_menu: host_menu(),
         ..Default::default()
     }
+}
+
+/// `window.DC_HOST_MENU = {title, items: [{id, label}]}`, set by the embedding page before the
+/// app starts, adds that menu before Help; choosing an item calls `window.dcHostMenu(id)`.
+fn host_menu() -> Option<designcraft_ui_egui::HostMenu> {
+    let window = web_sys::window()?;
+    let spec = js_sys::Reflect::get(&window, &wasm_bindgen::JsValue::from_str("DC_HOST_MENU")).ok()?;
+    if spec.is_undefined() || spec.is_null() {
+        return None;
+    }
+    let json = String::from(js_sys::JSON::stringify(&spec).ok()?);
+    let spec: serde_json::Value = serde_json::from_str(&json).ok()?;
+    let title = spec.get("title")?.as_str()?.to_string();
+    let items: Vec<(String, String)> = spec
+        .get("items")?
+        .as_array()?
+        .iter()
+        .filter_map(|item| Some((item.get("id")?.as_str()?.to_string(), item.get("label")?.as_str()?.to_string())))
+        .collect();
+    if items.is_empty() {
+        return None;
+    }
+    Some(designcraft_ui_egui::HostMenu {
+        title,
+        items,
+        invoke: Box::new(|id: &str| {
+            let Some(window) = web_sys::window() else { return };
+            let Ok(callback) = js_sys::Reflect::get(&window, &wasm_bindgen::JsValue::from_str("dcHostMenu")) else { return };
+            if let Some(callback) = callback.dyn_ref::<js_sys::Function>() {
+                let _ = callback.call1(&wasm_bindgen::JsValue::NULL, &wasm_bindgen::JsValue::from_str(id));
+            }
+        }),
+    })
 }
 
 /// Trigger a browser download of `bytes` named after the last component of `path`.

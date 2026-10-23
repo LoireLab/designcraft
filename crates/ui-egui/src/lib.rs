@@ -86,6 +86,16 @@ pub struct Services {
     /// The system clipboard's text, for Paste chosen from a menu (egui only delivers it with the
     /// paste keys, which a native menu bar takes first).
     pub clipboard_text: Option<ClipboardFn>,
+    /// A menu of the page that embeds the app (web), shown between Window and Help.
+    pub host_menu: Option<HostMenu>,
+}
+
+/// The embedding page's own menu: its title, its items as (id, label), and what choosing one
+/// does (the web build calls back into the page).
+pub struct HostMenu {
+    pub title: String,
+    pub items: Vec<(String, String)>,
+    pub invoke: Box<dyn FnMut(&str)>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
