@@ -512,10 +512,27 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             (Point::new(o.x, o.y + h), pos2(0.0, 1.0)),
         ];
         let mut mesh = egui::Mesh::with_texture(tex.id());
-        for (c, uv) in corners {
-            mesh.vertices.push(egui::epaint::Vertex { pos: xf.to_screen(c), uv, color: Color32::WHITE });
+        if (sh.zoom - xf.zoom).abs() < 1e-9 && xf.rot == 0 {
+            // At the texture's own zoom one texel is one device pixel: place it pixel for pixel.
+            // The overscanned origin lands between pixels and the region's size isn't a whole
+            // number of pixels, so placing the corners exactly sampled LINEAR at a fractional
+            // offset and scale, which blurred every glyph (most visible in the browser).
+            let ppp = ui.ctx().pixels_per_point();
+            let p0 = xf.to_screen(o);
+            let min = pos2((p0.x * ppp).round() / ppp, (p0.y * ppp).round() / ppp);
+            let [tw, th] = tex.size();
+            mesh.add_rect_with_uv(
+                Rect::from_min_size(min, egui::vec2(tw as f32 / ppp, th as f32 / ppp)),
+                Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                Color32::WHITE,
+            );
+        } else {
+            // Zooming (the old texture scaled until the new one arrives) or a rotated view.
+            for (c, uv) in corners {
+                mesh.vertices.push(egui::epaint::Vertex { pos: xf.to_screen(c), uv, color: Color32::WHITE });
+            }
+            mesh.indices.extend([0, 1, 2, 0, 2, 3]);
         }
-        mesh.indices.extend([0, 1, 2, 0, 2, 3]);
         if preview {
             // Preview: only the shown area of each spread keeps its content.
             for slot in &layout.slots {
