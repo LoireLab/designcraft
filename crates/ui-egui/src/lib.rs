@@ -1054,6 +1054,9 @@ impl DesignApp {
 
     fn import_file(&mut self, file: ImportedFile) -> Result<Value, String> {
         let lower = file.name.to_ascii_lowercase();
+        if is_font_file(&lower) {
+            return self.run("font.add", json!({"name": file.name, "base64": designcraft_engine::cmd::base64_encode(&file.bytes)}));
+        }
         if let Some(kind) = file.request.purpose.strip_prefix("styles") {
             self.activate_import_target(&file.request)?;
             let mut params = json!({"name": file.name, "base64": designcraft_engine::cmd::base64_encode(&file.bytes)});
@@ -1697,6 +1700,12 @@ pub fn cjk_features(app: &DesignApp) -> bool {
 
 /// Files that open as documents (when dropped or picked) rather than being placed: DesignCraft,
 /// IDML, and InDesign documents and templates (converted to IDML on open).
+/// A font file opened or dropped: its faces are added for the session (`font.add`).
+pub fn is_font_file(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    [".ttf", ".otf", ".ttc", ".otc"].iter().any(|ext| n.ends_with(ext))
+}
+
 pub fn opens_as_document(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
     [".designcraft", ".idml", ".indd", ".indt"].iter().any(|ext| n.ends_with(ext))

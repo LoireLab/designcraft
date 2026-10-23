@@ -1,6 +1,7 @@
 //! Type › Find/Replace Font: the fonts a document uses (missing ones flagged) and replacing one
 //! font with another everywhere — local formatting and style definitions. Type › Reload Fonts:
-//! the fonts installed, edited or removed since they were read.
+//! the fonts installed, edited or removed since they were read. `font.add`: a font file's faces
+//! for this session — the web build has no font folders, so this is how it gets fonts.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -35,7 +36,44 @@ pub fn specs() -> Vec<CommandSpec> {
             always,
             reload
         ),
+        cmd!(
+            noundo "font.add",
+            "Add Font",
+            [],
+            None,
+            "{base64, name?} — the faces of a TrueType, OpenType or collection file for this session (source `added`; families and styles already loaded are kept), then recomposes the open documents → {faces: faces added}",
+            always,
+            add
+        ),
     ]
+}
+
+/// A font file can't be larger than this (the biggest CJK families are ~30 MB).
+const MAX_FONT_BYTES: usize = 64 << 20;
+/// The first four bytes of a TrueType, OpenType (CFF), Apple TrueType or collection file.
+const FONT_MAGIC: [&[u8]; 4] = [b"\x00\x01\x00\x00", b"OTTO", b"true", b"ttcf"];
+
+/// Fonts that arrive as bytes (opened or dropped in the browser, sent over the control channel):
+/// added to the shared fonts, then every open document is composed again, as after a reload.
+fn add(s: &mut Session, p: &Value) -> Result<Value> {
+    let b64 = str_param(p, "base64").ok_or_else(|| bad("font.add", "missing `base64`"))?;
+    if b64.len() / 4 * 3 > MAX_FONT_BYTES {
+        return Err(bad("font.add", "font file larger than 64 MB"));
+    }
+    let bytes = super::base64_decode(b64);
+    let magic = bytes.get(..4).unwrap_or_default();
+    if !FONT_MAGIC.contains(&magic) {
+        let name = str_param(p, "name").unwrap_or("the file");
+        return Err(bad("font.add", format!("{name} is not a TrueType or OpenType font")));
+    }
+    let faces = designcraft_fonts::FontDb::global().add_font(bytes);
+    if faces > 0 {
+        s.cache = Arc::new(designcraft_compose::Cache::new());
+        for st in &mut s.docs {
+            st.bump_revision();
+        }
+    }
+    Ok(json!({"faces": faces}))
 }
 
 /// Fonts installed, edited or removed while the app runs (#328, #547): the font database reads
@@ -269,6 +307,28 @@ mod tests {
         let st = s.doc().unwrap();
         assert_ne!(st.revision, revision, "the canvas draws the document again");
         assert_eq!(st.history.undo.len(), undo, "reloading fonts isn't an edit");
+    }
+
+    #[test]
+    fn add_font_registers_its_faces_and_recomposes_open_documents() {
+        use designcraft_fonts::testing::font_with;
+        const FAMILY: &str = "Added Font Command Test";
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let bytes = font_with(FAMILY, &['A', 'B']).unwrap();
+        let b64 = super::super::base64_encode(&bytes);
+        let (cache, revision) = (Arc::clone(&s.cache), s.doc().unwrap().revision);
+        let r = s.execute("font.add", &json!({"name": "added.ttf", "base64": b64})).unwrap();
+        assert_eq!(r["faces"], 1, "{r}");
+        assert!(designcraft_fonts::FontDb::global().has_family(FAMILY));
+        assert!(!Arc::ptr_eq(&cache, &s.cache), "the layout composed without the font is let go");
+        assert_ne!(s.doc().unwrap().revision, revision, "the canvas draws the document again");
+        let again = s.execute("font.add", &json!({"base64": b64})).unwrap();
+        assert_eq!(again["faces"], 0, "a face already loaded is kept, not an error");
+        let e = s.execute("font.add", &json!({"name": "notes.txt", "base64": super::super::base64_encode(b"not a font")})).unwrap_err();
+        assert!(e.to_string().contains("notes.txt"), "{e}");
+        assert!(s.execute("font.add", &json!({})).is_err());
+        assert!(s.execute("font.add", &json!([1, 2])).is_err(), "params that aren't an object are refused, not a panic");
     }
 
     #[test]
